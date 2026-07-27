@@ -4,7 +4,7 @@ import os
 import sys
 import sqlite3
 
-# Force project root into Python path
+# Force the project root directory into the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.main_server import (
@@ -12,12 +12,15 @@ from src.main_server import (
     poll_crm_batch,
     transform_and_stitch_batch,
     export_to_data_warehouse,
+    export_to_parquet_buffer,
     get_pipeline_analytics_summary,
+    get_live_throughput_metrics,
     COLD_DB_PATH
 )
 
+
 def test_full_mcp_etl_lifecycle():
-    # 1. Clean up local test database before starting
+    # 1. Clean up local test database tables
     if os.path.exists(COLD_DB_PATH):
         conn = sqlite3.connect(COLD_DB_PATH)
         cursor = conn.cursor()
@@ -54,19 +57,31 @@ def test_full_mcp_etl_lifecycle():
     assert res_3["status"] == "TRANSFORMATION_COMPLETE"
     assert res_3["records_migrated"] == 1
 
-    # 5. ANALYTICS: Verify that both records exist in Cold Storage under 1 unified identity
+    # 5. ANALYTICS: Verify summary across both tiers
     res_4 = json.loads(get_pipeline_analytics_summary("ALL"))
-    summary = res_4
-    assert summary["hot_tier_pending_events"] == 0
-    assert summary["cold_tier_archived_records"] == 2
-    assert summary["total_unique_identities_stitched"] == 1
+    assert res_4["status"] == "ANALYTICS_RESOLVED"
+    assert res_4["hot_tier_pending_events"] == 0
+    assert res_4["cold_tier_archived_records"] == 2
+    assert res_4["total_unique_identities_stitched"] == 1
 
-    # 6. LOAD: Export to Snowflake Data Warehouse
+    # 6. METRICS: Test live throughput and system health
+    metrics_raw = get_live_throughput_metrics()
+    metrics = json.loads(metrics_raw)
+    assert metrics["system_health"] == "HEALTHY"
+    assert metrics["cold_tier_disk_records"] == 2
+
+    # 7. PARQUET EXPORT: Test Parquet buffer generation
+    parquet_raw = export_to_parquet_buffer(limit=10)
+    parquet_data = json.loads(parquet_raw)
+    assert parquet_data["status"] == "PARQUET_BUFFER_GENERATED"
+    assert parquet_data["format"] == "COLUMNS_OPTIMIZED"
+
+    # 8. LOAD: Export to Snowflake Data Warehouse
     res_5 = json.loads(export_to_data_warehouse("SNOWFLAKE", limit=10))
     assert res_5["status"] == "LOAD_SUCCESSFUL"
     assert res_5["target_warehouse"] == "SNOWFLAKE"
     assert res_5["records_exported"] == 2
-    
+
     # Verify PII (email) is redacted in exported data
     exported_data_str = str(res_5["exported_buffer"])
     assert "momenul@seosiri.com" not in exported_data_str
