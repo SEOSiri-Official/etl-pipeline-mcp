@@ -9,12 +9,13 @@ import json
 import hmac
 import hashlib
 import sqlite3
+import requests
 from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("SEOSiri-ETL-Pipeline-Orchestrator")
 
-# Secret key for HMAC webhook verification
+# Secret key for webhook signature verification
 WEBHOOK_SECRET_KEY = b"seosiri_etl_secure_key_2026"
 
 # 1. HOT TIER: High-Speed In-Memory SQLite for active stream buffering (RAM)
@@ -29,7 +30,6 @@ COLD_CURSOR = COLD_CONN.cursor()
 
 def init_databases():
     """Initializes in-memory and on-disk tables for the ETL pipeline."""
-    # Hot Tier Buffer
     HOT_CURSOR.execute("""
         CREATE TABLE IF NOT EXISTS hot_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +40,6 @@ def init_databases():
     """)
     HOT_CONN.commit()
 
-    # Cold Tier Archive
     COLD_CURSOR.execute("""
         CREATE TABLE IF NOT EXISTS cold_archive (
             mcp_root_id TEXT,
@@ -54,7 +53,6 @@ def init_databases():
         )
     """)
 
-    # Identity Resolution Registry
     COLD_CURSOR.execute("""
         CREATE TABLE IF NOT EXISTS identity_registry (
             mcp_root_id TEXT PRIMARY KEY,
@@ -103,7 +101,6 @@ def resolve_mcp_identity(email: str = None, crm_id: str = None, social_id: str =
         if row:
             return row[0]
 
-    # Create a new root ID if no match is found
     now_str = datetime.now(timezone.utc).isoformat()
     new_root_id = hashlib.sha1(f"{h_email}:{crm_id}:{social_id}:{now_str}".encode()).hexdigest()[:16]
     COLD_CURSOR.execute("""
@@ -128,7 +125,6 @@ def extract_realtime_stream(source_system: str, payload_json: str, hmac_signatur
         payload_json: Raw JSON payload string to extract and buffer.
         hmac_signature: Optional HMAC-SHA256 signature for payload verification.
     """
-    # Backpressure Guard: Throttle if Hot Tier memory queue exceeds 10,000 records
     HOT_CURSOR.execute("SELECT COUNT(*) FROM hot_queue")
     queue_size = HOT_CURSOR.fetchone()[0]
     if queue_size > 10000:
@@ -138,7 +134,6 @@ def extract_realtime_stream(source_system: str, payload_json: str, hmac_signatur
             "current_queue_size": queue_size
         })
 
-    # Optional HMAC Verification
     if hmac_signature:
         expected_sig = hmac.new(WEBHOOK_SECRET_KEY, payload_json.encode('utf-8'), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected_sig, hmac_signature):
@@ -174,7 +169,6 @@ def poll_crm_batch(source_system: str, crm_lead_id: str, email_address: str, pay
     mcp_root_id = resolve_mcp_identity(email=email_address, crm_id=crm_lead_id)
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    # Scrub raw email string from stored payload
     clean_payload = payload_json.replace(email_address, "[REDACTED_PII_EMAIL]")
 
     COLD_CURSOR.execute("""
@@ -206,19 +200,16 @@ def transform_and_stitch_batch(max_batch_size: int = 100) -> str:
     for row_id, ts, source, payload_str in rows:
         try:
             payload = json.loads(payload_str)
-            email = payload.get("email")
+            email = payload.get("email") or payload.get("email_address")
             crm_id = payload.get("crm_id") or payload.get("crm_lead_id")
             social_id = payload.get("social_id") or payload.get("social_user_id")
 
-            # Resolve unified identity across systems
             mcp_root_id = resolve_mcp_identity(email=email, crm_id=crm_id, social_id=social_id)
 
-            # Redact raw email if present
             clean_payload_str = payload_str
             if email:
                 clean_payload_str = clean_payload_str.replace(email, "[REDACTED_PII_EMAIL]")
 
-            # Priority scoring logic based on event urgency
             score = 1.0
             lower_payload = payload_str.lower()
             if "conversion" in lower_payload or "purchase" in lower_payload:
@@ -226,13 +217,11 @@ def transform_and_stitch_batch(max_batch_size: int = 100) -> str:
             if "error" in lower_payload or "alert" in lower_payload:
                 score += 3.0
 
-            # Write to Cold Storage
             COLD_CURSOR.execute("""
                 INSERT OR REPLACE INTO cold_archive (mcp_root_id, timestamp, source_system, anonymized_payload, priority_score, allocation_route, status)
                 VALUES (?, ?, ?, ?, ?, 'COLD_DISK_STORE', 'TRANSFORMED')
             """, (mcp_root_id, ts, source, clean_payload_str, score))
 
-            # Remove from Hot Queue
             HOT_CURSOR.execute("DELETE FROM hot_queue WHERE id = ?", (row_id,))
             migrated_count += 1
         except Exception:
@@ -295,39 +284,6 @@ def export_to_data_warehouse(target_warehouse: str, limit: int = 100) -> str:
 
 
 @mcp.tool()
-def get_pipeline_analytics_summary(source_system: str = "ALL") -> str:
-    """
-    ANALYTICS: Returns real-time row counts and processing metrics across Hot and Cold tiers.
-
-    Args:
-        source_system: Filter by source system ('HUBSPOT', 'SALESFORCE', 'ALL').
-    """
-    HOT_CURSOR.execute("SELECT COUNT(*) FROM hot_queue")
-    hot_count = HOT_CURSOR.fetchone()[0]
-
-    if source_system.upper() == "ALL":
-        COLD_CURSOR.execute("SELECT COUNT(*) FROM cold_archive")
-        cold_count = COLD_CURSOR.fetchone()[0]
-
-        COLD_CURSOR.execute("SELECT COUNT(DISTINCT mcp_root_id) FROM identity_registry")
-        identities_count = COLD_CURSOR.fetchone()[0]
-    else:
-        COLD_CURSOR.execute("SELECT COUNT(*) FROM cold_archive WHERE source_system = ?", (source_system.upper(),))
-        cold_count = COLD_CURSOR.fetchone()[0]
-
-        COLD_CURSOR.execute("SELECT COUNT(DISTINCT mcp_root_id) FROM identity_registry")
-        identities_count = COLD_CURSOR.fetchone()[0]
-
-    return json.dumps({
-        "status": "ANALYTICS_RESOLVED",
-        "hot_tier_pending_events": hot_count,
-        "cold_tier_archived_records": cold_count,
-        "total_unique_identities_stitched": identities_count
-    })
-
-# Add to src/main_server.py
-
-@mcp.tool()
 def export_to_parquet_buffer(limit: int = 500) -> str:
     """
     LOAD: Compiles transformed Cold Storage records into an optimized, 
@@ -361,6 +317,39 @@ def export_to_parquet_buffer(limit: int = 500) -> str:
         "buffer": parquet_buffer
     })
 
+
+@mcp.tool()
+def get_pipeline_analytics_summary(source_system: str = "ALL") -> str:
+    """
+    ANALYTICS: Returns real-time row counts and processing metrics across Hot and Cold tiers.
+
+    Args:
+        source_system: Filter by source system ('HUBSPOT', 'SALESFORCE', 'ALL').
+    """
+    HOT_CURSOR.execute("SELECT COUNT(*) FROM hot_queue")
+    hot_count = HOT_CURSOR.fetchone()[0]
+
+    if source_system.upper() == "ALL":
+        COLD_CURSOR.execute("SELECT COUNT(*) FROM cold_archive")
+        cold_count = COLD_CURSOR.fetchone()[0]
+
+        COLD_CURSOR.execute("SELECT COUNT(DISTINCT mcp_root_id) FROM identity_registry")
+        identities_count = COLD_CURSOR.fetchone()[0]
+    else:
+        COLD_CURSOR.execute("SELECT COUNT(*) FROM cold_archive WHERE source_system = ?", (source_system.upper(),))
+        cold_count = COLD_CURSOR.fetchone()[0]
+
+        COLD_CURSOR.execute("SELECT COUNT(DISTINCT mcp_root_id) FROM identity_registry")
+        identities_count = COLD_CURSOR.fetchone()[0]
+
+    return json.dumps({
+        "status": "ANALYTICS_RESOLVED",
+        "hot_tier_pending_events": hot_count,
+        "cold_tier_archived_records": cold_count,
+        "total_unique_identities_stitched": identities_count
+    })
+
+
 @mcp.tool()
 def get_live_throughput_metrics() -> str:
     """
@@ -376,7 +365,6 @@ def get_live_throughput_metrics() -> str:
     COLD_CURSOR.execute("SELECT COUNT(DISTINCT mcp_root_id) FROM identity_registry")
     identities = COLD_CURSOR.fetchone()[0]
 
-    # Memory health rating
     health_status = "HEALTHY" if hot_size < 5000 else "ELEVATED_BACKPRESSURE"
 
     return json.dumps({
@@ -386,6 +374,7 @@ def get_live_throughput_metrics() -> str:
         "unique_identities_stitched": identities,
         "recommended_action": "FLUSH_HOT_TIER" if hot_size > 1000 else "NOMINAL"
     })
+
 
 if __name__ == "__main__":
     import time
