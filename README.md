@@ -1,0 +1,70 @@
+# seosiri-etl-pipeline-mcp
+
+A sovereign, local-first, open-source Model Context Protocol (MCP) server for end-to-end Big Data Extraction, Transformation, Identity Resolution, and Warehouse Loading (ETL/ELT).
+
+## 💖 Sponsorship & B2B Custom Solutions
+
+### 👨‍💻 Lead Architect & Attribution
+Designed and engineered by **[Momenul Ahmad](https://github.com/MOBILEPHONE)**, Lead Architect and Founder of **[SEOSiri](https://seosiri.com)**.
+
+### 🚀 Capabilities
+- **Multi-Platform Ingestion**: Ingests real-time webhooks (CMS, email, social) and batch CRM records (HubSpot, Salesforce).
+- **Decoupled Hot/Cold Storage**: In-memory SQLite Hot Tier for low-latency queueing + on-disk Cold Tier for permanent, anonymized storage.
+- **Identity Resolution**: Merges fragmented user identities across CRM, social, and email records under a single `mcp_root_id` via ID stitching.
+- **GDPR/HIPAA PII Redaction**: Automatic SHA-256 hashing and string redaction of PII before long-term storage or export.
+- **Warehouse Exporter**: Exports clean, transformed data buffers directly to Snowflake, ClickHouse, or BigQuery.
+
+## Quickstart
+
+1. **Install in Editable Mode**:
+   ```bash
+   pip install -e .
+   ```
+
+2. **Run Unit Tests**:
+   ```bash
+   pytest tests/test_etl_pipeline.py
+   ```
+
+## 🔌 Connecting to Claude Desktop / Cursor
+
+### Local Script Execution
+Add this block to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "etl-pipeline-mcp": {
+      "command": "python",
+      "args": [
+        "D:/seosiri-etl-pipeline-mcp/src/main_server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "D:/seosiri-etl-pipeline-mcp"
+      }
+    }
+  }
+}
+```
+
+### Remote Execution via GitHub
+Or for zero-setup execution directly from GitHub using `uv`:
+
+```json
+{
+  "mcpServers": {
+    "etl-pipeline-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--github",
+        "SEOSiri-Official/etl-pipeline-mcp",
+        "src/main_server.py"
+      ]
+    }
+  }
+}
+```
+
+## License
+Distributed under the MIT License. See [LICENSE](https://github.com/SEOSiri-Official/etl-pipeline-mcp) for more information.

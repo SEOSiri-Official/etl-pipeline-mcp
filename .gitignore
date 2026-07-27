@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+.vscode/
+seosiri_etl_pipeline_mcp.egg-info/
