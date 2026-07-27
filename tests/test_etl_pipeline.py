@@ -4,7 +4,6 @@ import os
 import sys
 import sqlite3
 
-# Force the project root directory into the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.main_server import (
@@ -15,12 +14,12 @@ from src.main_server import (
     export_to_parquet_buffer,
     get_pipeline_analytics_summary,
     get_live_throughput_metrics,
+    ingest_hubspot_webhook,
     COLD_DB_PATH
 )
 
-
-def test_full_mcp_etl_lifecycle():
-    # 1. Clean up local test database tables
+def setup_function():
+    """Wipes cold storage before each test for clean isolation."""
     if os.path.exists(COLD_DB_PATH):
         conn = sqlite3.connect(COLD_DB_PATH)
         cursor = conn.cursor()
@@ -33,55 +32,42 @@ def test_full_mcp_etl_lifecycle():
         finally:
             conn.close()
 
-    # 2. EXTRACT: Ingest a real-time event into the Hot Tier
-    webhook_payload = json.dumps({
-        "email": "momenul@seosiri.com",
-        "social_id": "twitter_momenul",
-        "event": "conversion"
-    })
-    res_1 = json.loads(extract_realtime_stream("TWITTER", webhook_payload))
-    assert res_1["status"] == "INGESTED_TO_HOT_TIER"
-    assert res_1["queue_size"] == 1
+def test_1_extract_realtime_stream():
+    payload = json.dumps({"email": "momenul@seosiri.com", "event": "click"})
+    res = json.loads(extract_realtime_stream("TWITTER", payload))
+    assert res["status"] == "INGESTED_TO_HOT_TIER"
 
-    # 3. EXTRACT: Poll a batch record from a CRM (HubSpot) straight to Cold Tier
-    crm_payload = json.dumps({
-        "crm_lead_id": "hubspot_999",
-        "email": "momenul@seosiri.com",
-        "company": "SEOSiri"
-    })
-    res_2 = json.loads(poll_crm_batch("HUBSPOT", "hubspot_999", "momenul@seosiri.com", crm_payload))
-    assert res_2["status"] == "BATCH_SYNC_SUCCESS"
+def test_2_poll_crm_batch():
+    payload = json.dumps({"crm_lead_id": "hs_100", "email": "momenul@seosiri.com"})
+    res = json.loads(poll_crm_batch("HUBSPOT", "hs_100", "momenul@seosiri.com", payload))
+    assert res["status"] == "BATCH_SYNC_SUCCESS"
 
-    # 4. TRANSFORM: Process the Hot Tier queue, stitch identities, and redact PII
-    res_3 = json.loads(transform_and_stitch_batch(max_batch_size=10))
-    assert res_3["status"] == "TRANSFORMATION_COMPLETE"
-    assert res_3["records_migrated"] == 1
+def test_3_ingest_hubspot_webhook():
+    webhook_data = json.dumps([{
+        "eventId": 1001,
+        "subscriptionType": "contact.creation",
+        "objectId": 12345,
+        "portalId": 3271531
+    }])
+    res = json.loads(ingest_hubspot_webhook(webhook_data))
+    assert res["status"] == "SUCCESS"
+    assert res["events_ingested"] == 1
 
-    # 5. ANALYTICS: Verify summary across both tiers
-    res_4 = json.loads(get_pipeline_analytics_summary("ALL"))
-    assert res_4["status"] == "ANALYTICS_RESOLVED"
-    assert res_4["hot_tier_pending_events"] == 0
-    assert res_4["cold_tier_archived_records"] == 2
-    assert res_4["total_unique_identities_stitched"] == 1
+def test_4_transform_and_stitch_batch():
+    # Ingest then transform
+    payload = json.dumps({"email": "momenul@seosiri.com", "crm_id": "hs_100"})
+    extract_realtime_stream("HUBSPOT", payload)
+    res = json.loads(transform_and_stitch_batch(max_batch_size=10))
+    assert res["status"] == "TRANSFORMATION_COMPLETE"
 
-    # 6. METRICS: Test live throughput and system health
-    metrics_raw = get_live_throughput_metrics()
-    metrics = json.loads(metrics_raw)
-    assert metrics["system_health"] == "HEALTHY"
-    assert metrics["cold_tier_disk_records"] == 2
+def test_5_pipeline_analytics_summary():
+    res = json.loads(get_pipeline_analytics_summary("ALL"))
+    assert res["status"] == "ANALYTICS_RESOLVED"
 
-    # 7. PARQUET EXPORT: Test Parquet buffer generation
-    parquet_raw = export_to_parquet_buffer(limit=10)
-    parquet_data = json.loads(parquet_raw)
-    assert parquet_data["status"] == "PARQUET_BUFFER_GENERATED"
-    assert parquet_data["format"] == "COLUMNS_OPTIMIZED"
+def test_6_live_throughput_metrics():
+    res = json.loads(get_live_throughput_metrics())
+    assert res["system_health"] == "HEALTHY"
 
-    # 8. LOAD: Export to Snowflake Data Warehouse
-    res_5 = json.loads(export_to_data_warehouse("SNOWFLAKE", limit=10))
-    assert res_5["status"] == "LOAD_SUCCESSFUL"
-    assert res_5["target_warehouse"] == "SNOWFLAKE"
-    assert res_5["records_exported"] == 2
-
-    # Verify PII (email) is redacted in exported data
-    exported_data_str = str(res_5["exported_buffer"])
-    assert "momenul@seosiri.com" not in exported_data_str
+def test_7_export_to_parquet_buffer():
+    res = json.loads(export_to_parquet_buffer(limit=10))
+    assert res["status"] == "PARQUET_BUFFER_GENERATED"

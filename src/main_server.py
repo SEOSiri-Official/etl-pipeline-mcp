@@ -375,6 +375,53 @@ def get_live_throughput_metrics() -> str:
         "recommended_action": "FLUSH_HOT_TIER" if hot_size > 1000 else "NOMINAL"
     })
 
+# =====================================================================
+# TOOL 8: HUBSPOT WEBHOOK INGESTOR (`ingest_hubspot_webhook`)
+# =====================================================================
+@mcp.tool()
+def ingest_hubspot_webhook(webhook_payload_json: str) -> str:
+    """
+    Ingests real-time webhook event arrays sent from HubSpot subscriptions 
+    (contact.creation, contact.propertyChange) directly into the Hot Tier queue.
+    """
+    try:
+        events = json.loads(webhook_payload_json)
+        if not isinstance(events, list):
+            events = [events]
+
+        ingested_count = 0
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        for event in events:
+            # Extract HubSpot webhook payload fields
+            event_type = event.get("subscriptionType", "HUBSPOT_EVENT")
+            object_id = event.get("objectId")
+            portal_id = event.get("portalId")
+            
+            # Formulate structured payload for Hot Tier
+            internal_payload = {
+                "crm_id": str(object_id),
+                "portal_id": portal_id,
+                "event_type": event_type,
+                "raw_event": event
+            }
+
+            HOT_CURSOR.execute("""
+                INSERT INTO hot_queue (timestamp, source_system, payload_data)
+                VALUES (?, 'HUBSPOT_WEBHOOK', ?)
+            """, (timestamp, json.dumps(internal_payload)))
+            ingested_count += 1
+
+        HOT_CONN.commit()
+
+        return json.dumps({
+            "status": "SUCCESS",
+            "source": "HUBSPOT_WEBHOOK",
+            "events_ingested": ingested_count,
+            "timestamp": timestamp
+        })
+    except Exception as e:
+        return json.dumps({"status": "FAILED", "error": str(e)})
 
 if __name__ == "__main__":
     import time
