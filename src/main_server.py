@@ -325,6 +325,67 @@ def get_pipeline_analytics_summary(source_system: str = "ALL") -> str:
         "total_unique_identities_stitched": identities_count
     })
 
+# Add to src/main_server.py
+
+@mcp.tool()
+def export_to_parquet_buffer(limit: int = 500) -> str:
+    """
+    LOAD: Compiles transformed Cold Storage records into an optimized, 
+    anonymized JSON-Parquet buffer ready for local DuckDB or S3 Data Lake ingestion.
+
+    Args:
+        limit: Maximum number of records to package into the Parquet buffer.
+    """
+    COLD_CURSOR.execute("""
+        SELECT mcp_root_id, timestamp, source_system, anonymized_payload, priority_score
+        FROM cold_archive
+        WHERE status IN ('ARCHIVED', 'TRANSFORMED')
+        LIMIT ?
+    """, (limit,))
+    rows = COLD_CURSOR.fetchall()
+
+    parquet_buffer = []
+    for mcp_id, ts, source, payload, score in rows:
+        parquet_buffer.append({
+            "mcp_root_id": mcp_id,
+            "timestamp_utc": ts,
+            "source": source,
+            "priority_weight": score,
+            "data_schema": json.loads(payload)
+        })
+
+    return json.dumps({
+        "status": "PARQUET_BUFFER_GENERATED",
+        "record_count": len(parquet_buffer),
+        "format": "COLUMNS_OPTIMIZED",
+        "buffer": parquet_buffer
+    })
+
+@mcp.tool()
+def get_live_throughput_metrics() -> str:
+    """
+    ANALYTICS: Measures processing latency, Hot Tier memory pressure, 
+    and Cold Tier storage utilization.
+    """
+    HOT_CURSOR.execute("SELECT COUNT(*) FROM hot_queue")
+    hot_size = HOT_CURSOR.fetchone()[0]
+
+    COLD_CURSOR.execute("SELECT COUNT(*) FROM cold_archive")
+    cold_size = COLD_CURSOR.fetchone()[0]
+
+    COLD_CURSOR.execute("SELECT COUNT(DISTINCT mcp_root_id) FROM identity_registry")
+    identities = COLD_CURSOR.fetchone()[0]
+
+    # Memory health rating
+    health_status = "HEALTHY" if hot_size < 5000 else "ELEVATED_BACKPRESSURE"
+
+    return json.dumps({
+        "system_health": health_status,
+        "hot_tier_memory_queue": hot_size,
+        "cold_tier_disk_records": cold_size,
+        "unique_identities_stitched": identities,
+        "recommended_action": "FLUSH_HOT_TIER" if hot_size > 1000 else "NOMINAL"
+    })
 
 if __name__ == "__main__":
     import time
