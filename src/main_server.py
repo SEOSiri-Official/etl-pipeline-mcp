@@ -71,15 +71,8 @@ init_databases()
 # HELPER FUNCTIONS: PII HASHING & IDENTITY STITCHING
 # ---------------------------------------------------------------------
 
-def hash_pii(value: str) -> str:
-    """Hashes sensitive PII using SHA-256 for GDPR/HIPAA compliance."""
-    if not value:
-        return "ANONYMOUS"
-    return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()
-
-
-def resolve_mcp_identity(email: str = None, crm_id: str = None, social_id: str = None) -> str:
-    """Stitches disparate identifiers (email, CRM ID, social ID) into a single mcp_root_id."""
+def resolve_mcp_identity(email: str = None, crm_id: str = None, social_id: str = None, stripe_id: str = None, github_id: str = None) -> str:
+    """Stitches email, crm, social, Stripe, and GitHub IDs into a single mcp_root_id."""
     h_email = hash_pii(email) if email else None
 
     query_conditions = []
@@ -102,7 +95,7 @@ def resolve_mcp_identity(email: str = None, crm_id: str = None, social_id: str =
             return row[0]
 
     now_str = datetime.now(timezone.utc).isoformat()
-    new_root_id = hashlib.sha1(f"{h_email}:{crm_id}:{social_id}:{now_str}".encode()).hexdigest()[:16]
+    new_root_id = hashlib.sha1(f"{h_email}:{crm_id}:{social_id}:{stripe_id}:{github_id}:{now_str}".encode()).hexdigest()[:16]
     COLD_CURSOR.execute("""
         INSERT INTO identity_registry (mcp_root_id, hashed_email, crm_id, social_id)
         VALUES (?, ?, ?, ?)
@@ -422,6 +415,46 @@ def ingest_hubspot_webhook(webhook_payload_json: str) -> str:
         })
     except Exception as e:
         return json.dumps({"status": "FAILED", "error": str(e)})
+
+        # =====================================================================
+# TOOL 9: MULTI-SOURCE WEBHOOK INGESTOR (`ingest_universal_event`)
+# =====================================================================
+@mcp.tool()
+def ingest_universal_event(source_system: str, event_type: str, payload_json: str, hmac_signature: str = "") -> str:
+    """
+    EXTRACT: Universal webhook/event ingestor. Accepts events from Stripe, GitHub, Shopify, 
+    custom apps, or any REST webhook source directly into the Hot Tier.
+
+    Args:
+        source_system: Platform name (e.g. 'STRIPE', 'GITHUB', 'SHOPIFY', 'CUSTOM_APP').
+        event_type: Specific event name (e.g. 'payment_intent.succeeded', 'push', 'order_created').
+        payload_json: Raw JSON event payload string.
+        hmac_signature: Optional HMAC-SHA256 signature for payload verification.
+    """
+    HOT_CURSOR.execute("SELECT COUNT(*) FROM hot_queue")
+    queue_size = HOT_CURSOR.fetchone()[0]
+    if queue_size > 10000:
+        return json.dumps({"status": "BACKPRESSURE_LIMIT_EXCEEDED", "action": "THROTTLE_INGESTION_RATE"})
+
+    if hmac_signature:
+        expected_sig = hmac.new(WEBHOOK_SECRET_KEY, payload_json.encode('utf-8'), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected_sig, hmac_signature):
+            return json.dumps({"status": "REJECTED", "reason": "SECURITY_SIGNATURE_MISMATCH"})
+
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    HOT_CURSOR.execute("""
+        INSERT INTO hot_queue (timestamp, source_system, payload_data)
+        VALUES (?, ?, ?)
+    """, (timestamp, f"{source_system.upper().strip()}:{event_type.strip()}", payload_json))
+    HOT_CONN.commit()
+
+    return json.dumps({
+        "status": "INGESTED_TO_HOT_TIER",
+        "source": source_system.upper(),
+        "event_type": event_type,
+        "timestamp": timestamp,
+        "queue_size": queue_size + 1
+    })
 
 if __name__ == "__main__":
     import time

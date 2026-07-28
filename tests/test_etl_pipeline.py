@@ -71,3 +71,9 @@ def test_6_live_throughput_metrics():
 def test_7_export_to_parquet_buffer():
     res = json.loads(export_to_parquet_buffer(limit=10))
     assert res["status"] == "PARQUET_BUFFER_GENERATED"
+
+def test_8_ingest_universal_event():
+    stripe_payload = json.dumps({"customer_id": "cus_123", "amount": 5000, "currency": "usd"})
+    res = json.loads(ingest_universal_event("STRIPE", "payment_intent.succeeded", stripe_payload))
+    assert res["status"] == "INGESTED_TO_HOT_TIER"
+    assert res["source"] == "STRIPE"
