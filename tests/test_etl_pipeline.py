@@ -15,6 +15,7 @@ from src.main_server import (
     get_pipeline_analytics_summary,
     get_live_throughput_metrics,
     ingest_hubspot_webhook,
+    ingest_universal_event,
     COLD_DB_PATH
 )
 
@@ -54,7 +55,6 @@ def test_3_ingest_hubspot_webhook():
     assert res["events_ingested"] == 1
 
 def test_4_transform_and_stitch_batch():
-    # Ingest then transform
     payload = json.dumps({"email": "momenul@seosiri.com", "crm_id": "hs_100"})
     extract_realtime_stream("HUBSPOT", payload)
     res = json.loads(transform_and_stitch_batch(max_batch_size=10))

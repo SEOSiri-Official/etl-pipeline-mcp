@@ -71,6 +71,13 @@ init_databases()
 # HELPER FUNCTIONS: PII HASHING & IDENTITY STITCHING
 # ---------------------------------------------------------------------
 
+def hash_pii(value: str) -> str:
+    """Hashes sensitive PII using SHA-256 for GDPR/HIPAA compliance."""
+    if not value:
+        return "ANONYMOUS"
+    return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()
+
+
 def resolve_mcp_identity(email: str = None, crm_id: str = None, social_id: str = None, stripe_id: str = None, github_id: str = None) -> str:
     """Stitches email, crm, social, Stripe, and GitHub IDs into a single mcp_root_id."""
     h_email = hash_pii(email) if email else None
@@ -368,9 +375,7 @@ def get_live_throughput_metrics() -> str:
         "recommended_action": "FLUSH_HOT_TIER" if hot_size > 1000 else "NOMINAL"
     })
 
-# =====================================================================
-# TOOL 8: HUBSPOT WEBHOOK INGESTOR (`ingest_hubspot_webhook`)
-# =====================================================================
+
 @mcp.tool()
 def ingest_hubspot_webhook(webhook_payload_json: str) -> str:
     """
@@ -386,12 +391,10 @@ def ingest_hubspot_webhook(webhook_payload_json: str) -> str:
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         for event in events:
-            # Extract HubSpot webhook payload fields
             event_type = event.get("subscriptionType", "HUBSPOT_EVENT")
             object_id = event.get("objectId")
             portal_id = event.get("portalId")
             
-            # Formulate structured payload for Hot Tier
             internal_payload = {
                 "crm_id": str(object_id),
                 "portal_id": portal_id,
@@ -416,9 +419,7 @@ def ingest_hubspot_webhook(webhook_payload_json: str) -> str:
     except Exception as e:
         return json.dumps({"status": "FAILED", "error": str(e)})
 
-        # =====================================================================
-# TOOL 9: MULTI-SOURCE WEBHOOK INGESTOR (`ingest_universal_event`)
-# =====================================================================
+
 @mcp.tool()
 def ingest_universal_event(source_system: str, event_type: str, payload_json: str, hmac_signature: str = "") -> str:
     """
@@ -455,6 +456,7 @@ def ingest_universal_event(source_system: str, event_type: str, payload_json: st
         "timestamp": timestamp,
         "queue_size": queue_size + 1
     })
+
 
 if __name__ == "__main__":
     import time
