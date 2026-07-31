@@ -23,8 +23,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SEOSiri-Official/etl-pipeline-mcp"
-Repository = "https://github.com/SEOSiri-Official/etl-pipeline-mcp.git"
+Documentation = "https://www.seosiri.com/2026/07/seosiri-mcp-servers.html"
+Homepage = "https://www.seosiri.com/2026/07/etl-pipeline-mcp.html"
+Repository = "https://www.seosiri.com/2026/07/etl-pipeline-mcp.html.git"
 
 [build-system]
 requires = ["setuptools>=61.0"]
